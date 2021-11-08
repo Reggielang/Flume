@@ -1,0 +1,204 @@
+一、Flume是Cloudera提供的一个高可用的，高可靠的，
+分布式的海量日志采集、聚合和传输的系统。Flume基于流式架构，灵活简单。
+
+Flume最主要的作用就是，实时读取服务器本地磁盘的数据，将数据写入到HDFS。
+
+二、Flume架构
+1 Agent
+Agent是一个JVM进程，它以事件的形式将数据从源头送至目的。
+Agent主要有3个部分组成，Source、Channel、Sink。
+
+2 Source
+Source是负责接收数据到Flume Agent的组件。Source组件可以处理各种类型、各种格式的日志数据，
+包括avro、thrift、exec、jms、spooling directory、netcat、 taildir 、sequence generator、syslog、http、legacy。
+
+
+3 Channel
+Channel是位于Source和Sink之间的缓冲区。因此，Channel允许Source和Sink运作在不同的速率上。Channel是线程安全的，可以同时处理几个Source的写入操作和几个Sink的读取操作。
+
+Flume自带两种Channel：Memory Channel和File Channel。
+Memory Channel是内存中的队列。Memory Channel在不需要关心数据丢失的情景下适用。
+如果需要关心数据丢失，那么Memory Channel就不应该使用，
+因为程序死亡、机器宕机或者重启都会导致数据丢失。
+
+File Channel将所有事件写到磁盘。因此在程序关闭或机器宕机的情况下不会丢失数据。
+
+4 Sink
+Sink不断地轮询Channel中的事件且批量地移除它们，并将这些事件批量写入到存储或索引系统、或者被发送到另一个Flume Agent。
+Sink组件目的地包括hdfs、logger、avro、thrift、ipc、file、HBase、solr、自定义。
+
+5 Event
+传输单元，Flume数据传输的基本单元，以Event的形式将数据从源头送至目的地。
+Event由Header和Body两部分组成，Header用来存放该event的一些属性，为K-V结构，Body用来存放该条数据，形式为字节数组。
+
+Flume入门案例 (每启动一个flume都要指定一个配置信息)
+http://flume.apache.org/FlumeUserGuide.html
+1 监控端口数据官方案例
+1）案例需求：
+使用Flume监听一个端口，收集该端口数据，并打印到控制台。 
+配置文件名：netcat-flume-logger.conf
+#Named
+a1.sources=r1
+a1.channels = c1
+a1.sinks = k1
+#Source
+a1.sources.r1.type=netcat
+a1.sources.r1.bind = localhost
+a1.sources.r1.port = 6666
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+#Sink
+a1.sinks.k1.type=logger
+#Bind
+a1.sources.r1.channels=c1
+a1.sinks.k1.channel=c1
+
+启动测试
+开启flume监听端口
+第一种写法：
+bin/flume-ng agent --conf conf/ --name a1 --conf-file job/flume-netcat-logger.conf -Dflume.root.logger=INFO,console
+
+第二种写法：
+bin/flume-ng agent -c conf/ -n a1 -f job/flume-netcat-logger.conf -Dflume.root.logger=INFO,console
+参数说明：
+--conf/-c：表示配置文件存储在conf/目录
+--name/-n：表示给agent起名为a1
+--conf-file/-f：flume本次启动读取的配置文件是在job文件夹下的flume-telnet.conf文件。
+-Dflume.root.logger=INFO,console ：-D表示flume运行时动态修改flume.root.logger参数属性值，并将控制台日志打印级别设置为INFO级别。日志级别包括:log、info、warn、error。
+
+2 实时监控单个追加文件
+1）案例需求：实时监控Hive日志，并上传到HDFS中
+配置文件名：exec-flume-hdfs.conf
+#Named
+a1.sources=r1
+a1.channels = c1
+a1.sinks = k1
+#Source
+a1.sources.r1.type=exec
+a1.sources.r1.command = tail -f /opt/module/flume-1.9.0/jobs/tail.txt
+
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+#Sink
+a1.sinks.k1.type = hdfs
+a1.sinks.k1.hdfs.path = hdfs://hadoop102:8020/flume/%Y%m%d/%H
+#上传文件的前缀
+a1.sinks.k1.hdfs.filePrefix = logs-
+#是否按照时间滚动文件夹
+a1.sinks.k1.hdfs.round = true
+#多少时间单位创建一个新的文件夹
+a1.sinks.k1.hdfs.roundValue = 1
+#重新定义时间单位
+a1.sinks.k1.hdfs.roundUnit = hour
+#是否使用本地时间戳
+a1.sinks.k1.hdfs.useLocalTimeStamp = true
+#积攒多少个Event才flush到HDFS一次
+a1.sinks.k1.hdfs.batchSize = 100
+#设置文件类型，可支持压缩
+a1.sinks.k1.hdfs.fileType = DataStream
+#多久生成一个新的文件
+a1.sinks.k1.hdfs.rollInterval = 60
+#设置每个文件的滚动大小
+a1.sinks.k1.hdfs.rollSize = 134217700
+#文件的滚动与Event数量无关
+a1.sinks.k1.hdfs.rollCount = 0
+ 
+#Bind
+a1.sources.r1.channels=c1
+a1.sinks.k1.channel=c1
+
+3 实时监控目录下多个新文件
+1）案例需求：使用Flume监听整个目录的文件，并上传至HDFS
+配置文件名：spooling-flume-hdfs.conf
+#Named
+a1.sources=r1
+a1.channels = c1
+a1.sinks = k1
+#Source
+a1.sources.r1.type=spooldir
+a1.sources.r1.spoolDir = /opt/module/flume-1.9.0/jobs/spooling
+a1.sources.r1.fileSuffix = .COMPLETED
+a1.sources.r1.ignorePattern = .*\.tmp
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+#Sink
+a1.sinks.k1.type = hdfs
+a1.sinks.k1.hdfs.path = hdfs://hadoop102:8020/flume/%Y%m%d/%H
+#上传文件的前缀
+a1.sinks.k1.hdfs.filePrefix = logs-
+#是否按照时间滚动文件夹
+a1.sinks.k1.hdfs.round = true
+#多少时间单位创建一个新的文件夹
+a1.sinks.k1.hdfs.roundValue = 1
+#重新定义时间单位
+a1.sinks.k1.hdfs.roundUnit = hour
+#是否使用本地时间戳
+a1.sinks.k1.hdfs.useLocalTimeStamp = true
+#积攒多少个Event才flush到HDFS一次
+a1.sinks.k1.hdfs.batchSize = 100
+#设置文件类型，可支持压缩
+a1.sinks.k1.hdfs.fileType = DataStream
+#多久生成一个新的文件
+a1.sinks.k1.hdfs.rollInterval = 60
+#设置每个文件的滚动大小
+a1.sinks.k1.hdfs.rollSize = 134217700
+#文件的滚动与Event数量无关
+a1.sinks.k1.hdfs.rollCount = 0
+ 
+#Bind
+a1.sources.r1.channels=c1
+a1.sinks.k1.channel=c1
+
+4 实时监控目录下的多个追加文件
+Exec source适用于监控一个实时追加的文件，不能实现断点续传；Spooldir Source适合用于同步新文件，但不适合对实时追加日志的文件进行监听并同步；而Taildir Source适合用于监听多个实时追加的文件，并且能够实现断点续传。
+1）案例需求:使用Flume监听整个目录的实时追加文件，并上传至HDFS
+可以上传不同的文件进行分组管理
+配置文件名：taildir-flume-hdfs.conf
+#Named
+a1.sources=r1
+a1.channels = c1
+a1.sinks = k1
+#Source
+a1.sources.r1.type=TAILDIR
+a1.sources.r1.filegroups=f1 f2
+a1.sources.r1.filegroups.f1=/opt/module/flume-1.9.0/jobs/taildir/.*\.txt
+a1.sources.r1.filegroups.f2=/opt/module/flume-1.9.0/jobs/taildir/.*\.log
+a1.sources.r1.positionFile=/opt/module/flume-1.9.0/jobs/position/position.json
+
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+#Sink
+a1.sinks.k1.type = hdfs
+a1.sinks.k1.hdfs.path = hdfs://hadoop102:8020/flume/%Y%m%d/%H
+#上传文件的前缀
+a1.sinks.k1.hdfs.filePrefix = logs-
+#是否按照时间滚动文件夹
+a1.sinks.k1.hdfs.round = true
+#多少时间单位创建一个新的文件夹
+a1.sinks.k1.hdfs.roundValue = 1
+#重新定义时间单位
+a1.sinks.k1.hdfs.roundUnit = hour
+#是否使用本地时间戳
+a1.sinks.k1.hdfs.useLocalTimeStamp = true
+#积攒多少个Event才flush到HDFS一次
+a1.sinks.k1.hdfs.batchSize = 100
+#设置文件类型，可支持压缩
+a1.sinks.k1.hdfs.fileType = DataStream
+#多久生成一个新的文件
+a1.sinks.k1.hdfs.rollInterval = 60
+#设置每个文件的滚动大小
+a1.sinks.k1.hdfs.rollSize = 134217700
+#文件的滚动与Event数量无关
+a1.sinks.k1.hdfs.rollCount = 0
+ 
+#Bind
+a1.sources.r1.channels=c1
+a1.sinks.k1.channel=c1
