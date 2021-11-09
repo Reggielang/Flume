@@ -57,6 +57,7 @@ a1.sinks.k1.channel=c1
 
 启动测试
 开启flume监听端口
+注：使用jps -ml查看Flume进程。
 第一种写法：
 bin/flume-ng agent --conf conf/ --name a1 --conf-file job/flume-netcat-logger.conf -Dflume.root.logger=INFO,console
 

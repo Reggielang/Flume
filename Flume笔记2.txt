@@ -1,0 +1,322 @@
+三、Flume事务
+数据输入端
+Put事务流程
+doPut:将批数据先写入临时缓冲区putList
+doCommit:检查channel内存队列是否足够合并。
+doRollback:channel内存队列空间不足，回滚数据
+
+数据输出端
+Take事务
+doTake:将数据取到临时缓冲区takeList，并将数据发送到HDFS
+doCommit:如果数据全部发送成功，则清除临时缓冲区takeList
+doRollback:数据发送过程中如果出现异常，rollback将临时缓冲区takeList中的数据归还给channel内存队列。
+
+Flume Agent内部原理
+1 接收数据
+2 处理事件
+3 将事件传递给拦截器链！
+4 将每个事件给Channel选择器
+Channel Selectors有两种类型:Replicating Channel Selector (default)和Multiplexing Channel Selector。Replicating 会将source过来的events发往所有channel,而Multiplexing可以配置发往哪些Channel。
+5 返回写入事件Channel列表
+6 根据Channel选择器的选择结果，将事件写入相应Channel。
+7 SinkProcessor有三种：
+DefaultSinkProcessor、LoadBalancingSinkProcessor、FailoverSinkProcessor
+每种都有其各自的功能
+
+重要组件：
+1）ChannelSelector
+ChannelSelector的作用就是选出Event将要被发往哪个Channel。其共有两种类型，分别是Replicating（复制）和Multiplexing（多路复用）。
+ReplicatingSelector会将同一个Event发往所有的Channel，Multiplexing会根据相应的原则，将不同的Event发往不同的Channel。
+2）SinkProcessor
+SinkProcessor共有三种类型，分别是DefaultSinkProcessor、LoadBalancingSinkProcessor、FailoverSinkProcessor 
+DefaultSinkProcessor对应的是单个的Sink，LoadBalancingSinkProcessor和FailoverSinkProcessor对应的是Sink Group，LoadBalancingSinkProcessor可以实现负载均衡的功能，FailoverSinkProcessor可以错误恢复的功能。
+
+Flume拓扑结构
+简单串联
+这种模式是将多个flume顺序连接起来了，从最初的source开始到最终sink传送的目的存储系统。此模式不建议桥接过多的flume数量， flume数量过多不仅会影响传输速率，而且一旦传输过程中某个节点flume宕机，会影响整个传输系统。
+
+复制和多路复用
+Flume支持将事件流向一个或者多个目的地。这种模式可以将相同数据复制到多个channel中，或者将不同数据分发到不同的channel中，sink可以选择传送到不同的目的地。
+
+负载均衡和故障转移
+Flume支持使用将多个sink逻辑上分到一个sink组，sink组配合不同的SinkProcessor可以实现负载均衡和错误恢复的功能。
+
+聚合
+这种模式是我们最常见的，也非常实用，日常web应用通常分布在上百个服务器，大者甚至上千个、上万个服务器。产生的日志，处理起来也非常麻烦。用flume的这种组合方式能很好的解决这一问题，每台服务器部署一个flume采集日志，传送到一个集中收集日志的flume，再由此flume上传到hdfs、hive、hbase等，进行日志分析。
+
+Flume企业开发案例
+1 复制和多路复用
+1）案例需求
+使用Flume-1监控文件变动，Flume-1将变动内容传递给Flume-2，Flume-2负责存储到HDFS。同时Flume-1将变动内容传递给Flume-3，Flume-3负责输出到Local FileSystem。
+
+flume1.conf
+#Named
+a1.sources=r1
+a1.channels = c1 c2
+a1.sinks = k1
+#Source
+a1.sources.r1.type=TAILDIR
+a1.sources.r1.filegroups=f1
+a1.sources.r1.filegroups.f1=/opt/module/flume-1.9.0/jobs/taildir/.*\.txt
+a1.sources.r1.positionFile=/opt/module/flume-1.9.0/jobs/position/position.json
+
+#channel selector
+a1.sources.r1.selector.type=replicating
+
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+
+a1.channels.c2.type=memory
+a1.channels.c2.capacity=10000
+a1.channels.c2.transactionCapacity=100
+
+#Sink
+a1.sinks.k1.type=avro
+a1.sinks.k1.hostname=localhost
+a1.sinks.k1.port = 7777
+
+a1.sinks.k2.type=avro
+a1.sinks.k2.hostname=localhost
+a1.sinks.k2.port = 8888
+ 
+#Bind
+a1.sources.r1.channels=c1 c2
+a1.sinks.k1.channel=c1
+a1.sinks.k2.channel=c2
+
+flume2.conf
+#Named
+a2.sources=r1
+a2.channels = c1
+a2.sinks = k1
+
+#Source
+a2.sources.r1.type=avro
+a2.sources.r1.bind = localhost
+a2.sources.r1.port = 7777
+#Channel
+a2.channels.c1.type=memory
+a2.channels.c1.capacity=10000
+a2.channels.c1.transactionCapacity=100
+#Sink
+a2.sinks.k1.type = hdfs
+a2.sinks.k1.hdfs.path = hdfs://hadoop102:8020/flume/%Y%m%d/%H
+#上传文件的前缀
+a2.sinks.k1.hdfs.filePrefix = logs-
+#是否按照时间滚动文件夹
+a2.sinks.k1.hdfs.round = true
+#多少时间单位创建一个新的文件夹
+a2.sinks.k1.hdfs.roundValue = 1
+#重新定义时间单位
+a2.sinks.k1.hdfs.roundUnit = hour
+#是否使用本地时间戳
+a2.sinks.k1.hdfs.useLocalTimeStamp = true
+#积攒多少个Event才flush到HDFS一次
+a2.sinks.k1.hdfs.batchSize = 100
+#设置文件类型，可支持压缩
+a2.sinks.k1.hdfs.fileType = DataStream
+#多久生成一个新的文件
+a2.sinks.k1.hdfs.rollInterval = 60
+#设置每个文件的滚动大小
+a2.sinks.k1.hdfs.rollSize = 134217700
+#文件的滚动与Event数量无关
+a2.sinks.k1.hdfs.rollCount = 0
+#Bind
+a2.sources.r1.channels=c1
+a2.sinks.k1.channel=c1
+
+flume3.conf
+#Named
+a3.sources=r1
+a3.channels = c1
+a3.sinks = k1
+
+#Source
+a3.sources.r1.type=avro
+a3.sources.r1.bind = localhost
+a3.sources.r1.port = 8888
+#Channel
+a3.channels.c1.type=memory
+a3.channels.c1.capacity=10000
+a3.channels.c1.transactionCapacity=100
+#Sink
+a3.sinks.k1.type=file_roll
+a3.sinks.k1.sink.directory = /opt/module/flume-1.9.0/jobs/fileroll
+#Bind
+a3.sources.r1.channels=c1
+a3.sinks.k1.channel=c1
+
+2 负载均衡和故障转移
+1）案例需求
+使用Flume1监控一个端口，其sink组中的sink分别对接Flume2和Flume3,然后使用负载均衡
+
+flume1.conf
+#Named
+a1.sources=r1
+a1.channels = c1
+a1.sinks = k1 k2
+#Source
+a1.sources.r1.type=netcat
+a1.sources.r1.bind=localhost
+a1.sources.r1.port=6666
+
+#channel selector
+a1.sources.r1.selector.type=replicating
+
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+
+#Sink
+a1.sinks.k1.type=avro
+a1.sinks.k1.hostname=localhost
+a1.sinks.k1.port = 7777
+
+a1.sinks.k2.type=avro
+a1.sinks.k2.hostname=localhost
+a1.sinks.k2.port = 8888
+
+#sink processor
+a1.sinkgroups=g1
+a1.sinkgroups.g1.sinks= k1 k2
+a1.sinkgroups.g1.processor.type=load_balance
+a1.sinkgroups.g1.processor.selector=round_robin
+
+#Bind
+a1.sources.r1.channels=c1
+a1.sinks.k1.channel=c1
+a1.sinks.k2.channel=c1
+
+flume2.conf
+#Named
+a2.sources=r1
+a2.channels = c1
+a2.sinks = k1
+
+#Source
+a2.sources.r1.type=avro
+a2.sources.r1.bind = localhost
+a2.sources.r1.port = 7777
+
+#Channel
+a2.channels.c1.type=memory
+a2.channels.c1.capacity=10000
+a2.channels.c1.transactionCapacity=100
+
+#Sink
+a2.sinks.k1.type =logger
+
+#Bind
+a2.sources.r1.channels=c1
+a2.sinks.k1.channel=c1
+
+flume3.conf
+#Named
+a3.sources=r1
+a3.channels = c1
+a3.sinks = k1
+
+#Source
+a3.sources.r1.type=avro
+a3.sources.r1.bind = localhost
+a3.sources.r1.port = 8888
+#Channel
+a3.channels.c1.type=memory
+a3.channels.c1.capacity=10000
+a3.channels.c1.transactionCapacity=100
+#Sink
+a3.sinks.k1.type=logger
+
+#Bind
+a3.sources.r1.channels=c1
+a3.sinks.k1.channel=c1
+
+故障转移
+1）案例需求
+使用Flume1监控一个端口，其sink组中的sink分别对接Flume2和Flume3，采用FailoverSinkProcessor，实现故障转移的功能。
+
+flume1.conf
+#Named
+a1.sources=r1
+a1.channels = c1
+a1.sinks = k1 k2
+#Source
+a1.sources.r1.type=netcat
+a1.sources.r1.bind=localhost
+a1.sources.r1.port=6666
+
+#channel selector
+a1.sources.r1.selector.type=replicating
+
+#Channel
+a1.channels.c1.type=memory
+a1.channels.c1.capacity=10000
+a1.channels.c1.transactionCapacity=100
+
+#Sink
+a1.sinks.k1.type=avro
+a1.sinks.k1.hostname=localhost
+a1.sinks.k1.port = 7777
+
+a1.sinks.k2.type=avro
+a1.sinks.k2.hostname=localhost
+a1.sinks.k2.port = 8888
+
+#sink processor
+a1.sinkgroups=g1 
+a1.sinkgroups.g1.sinks= k1 k2
+a1.sinkgroups.g1.processor.type=failover
+a1.sinkgroups.g1.processor.priority.k1=5
+a1.sinkgroups.g1.processor.priority.k2=10
+
+#Bind
+a1.sources.r1.channels=c1
+a1.sinks.k1.channel=c1
+a1.sinks.k2.channel=c1
+
+flume2.conf
+#Named
+a2.sources=r1
+a2.channels = c1
+a2.sinks = k1
+
+#Source
+a2.sources.r1.type=avro
+a2.sources.r1.bind = localhost
+a2.sources.r1.port = 7777
+
+#Channel
+a2.channels.c1.type=memory
+a2.channels.c1.capacity=10000
+a2.channels.c1.transactionCapacity=100
+
+#Sink
+a2.sinks.k1.type =logger
+
+#Bind
+a2.sources.r1.channels=c1
+a2.sinks.k1.channel=c1
+
+flume3.conf
+#Named
+a3.sources=r1
+a3.channels = c1
+a3.sinks = k1
+
+#Source
+a3.sources.r1.type=avro
+a3.sources.r1.bind = localhost
+a3.sources.r1.port = 8888
+#Channel
+a3.channels.c1.type=memory
+a3.channels.c1.capacity=10000
+a3.channels.c1.transactionCapacity=100
+#Sink
+a3.sinks.k1.type=logger
+
+#Bind
+a3.sources.r1.channels=c1
+a3.sinks.k1.channel=c1
