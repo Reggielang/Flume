@@ -1,0 +1,4 @@
+flume\interceptor\MySink.class
+flume\interceptor\EventHeaderInterceptor.class
+flume\interceptor\MySource.class
+flume\interceptor\EventHeaderInterceptor$MyBuilder.class
